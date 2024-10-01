@@ -1,0 +1,199 @@
+//We should do all the checks before creating the map, that way we can colour code some of the issues... (that's actually JUST  moving some stuff forward)
+//Add more console.out.  
+//Produce a second set of test data that was actually fine.
+//Add the 'choose date' option. 
+function main(workbook: ExcelScript.Workbook) {
+    let range = workbook.getSelectedRange();
+    let values = range.getValues();
+
+    // Check if the selected range is valid and contains values
+    if (!range) {
+        console.log("Error: No range selected.");
+        return;
+    }
+    if (!values || values.length === 0) {
+        console.log("Error: The selected range contains NO data.");
+        return;
+    }
+
+    // Find the maximum row number, maximum people in a row, and number of people in each row.
+    // Make the structures.  
+    let maxRow = 0;
+    let maxPeopleInRow = 0;
+    let rowCounts = new Map<number, number>();
+    let studentCounts = new Map<string, { row: number, left: number, right: number, position: number }>();
+
+    for (let i = 0; i < values.length; i++) {
+        let name = values[i][5].toString(); // Column E
+        let row = getRowNumber(values[i][8].toString()); // Column H
+        let left = parseInt(values[i][6].toString()); // Column F
+        let right = parseInt(values[i][7].toString()); // Column G
+
+        if (row > maxRow) maxRow = row;
+        let student_count = left + right + 1;
+        if (student_count > maxPeopleInRow) maxPeopleInRow = student_count;
+
+        // Count people in each row
+        rowCounts.set(row, (rowCounts.get(row) || 0) + 1);
+
+        // Store student's count
+        studentCounts.set(name, { row, left, right, total: student_count  });
+    }
+
+    console.log("Max Row is     :" + maxRow);
+    console.log("Max Position is: " + maxPeopleInRow);
+
+    // Check if "Seating Chart" sheet exists, if so, clear it. If NOT, create it.
+    let chartSheet: ExcelScript.Worksheet;
+    try {
+        chartSheet = workbook.getWorksheet("Seating Chart");
+        chartSheet.getRange().clear();
+        console.log("Clearing the Seating chart sheet");
+    } catch {
+        chartSheet = workbook.addWorksheet("Seating Chart");
+        console.log("Adding the Seating chart sheet");
+    }
+
+    //FORMATTING STUFF
+    border(workbook, maxRow, maxPeopleInRow);
+    chartSheet.getRange("A:A").getFormat().autofitColumns();
+
+    // Add a title and other useful formatting. 
+    let titleCell = chartSheet.getCell(maxRow + 2, 1);
+    titleCell.setValue("Lecturer");
+    titleCell.getFormat().getFont().setBold(true);
+    titleCell.getFormat().getFont().setSize(22);
+    titleCell.getFormat().setHorizontalAlignment(ExcelScript.HorizontalAlignment.center);
+    let endColumnLetter = columnToLetter(maxPeopleInRow + 1);
+    chartSheet.getRange(`B12:${endColumnLetter}12`).merge();
+
+    chartSheet.getCell(0, 0).setValue("Row");
+    for (let i = maxRow; i > 0; i--) {
+        let cell = chartSheet.getCell(i, 0);
+        cell.setValue(maxRow - i+1);
+    }
+//END FORMATTING STUFF 
+
+
+
+    // Create the seating chart
+    for (let i = 0; i < values.length; i++) {//for each selected row
+        let name = values[i][5].toString(); // Column E
+        let row = getRowNumber(values[i][8].toString()); // Column H
+        let position = parseInt(values[i][7].toString()) + 1; // Column G
+
+        let cell = chartSheet.getCell(1 + maxRow - row, position);
+
+        // Check if there is already a student in this position
+        if (cell.getValue() !== "") {
+            let existingValue = cell.getValue().toString();
+            let newValue = existingValue + "\n "+name + " (" + studentCounts.get(name).total + ")"
+            cell.setValue(newValue);
+            // Change cell color to red to show a conflict
+            cell.getFormat().getFill().setColor("red");
+            console.log(`Warning: Conflict detected at row ${maxRow - row + 1}, column ${position}. Combined names: "${newValue}"`);
+        } else {
+            cell.setValue(name + " ("+studentCounts.get(name).total+")");
+            cell.getFormat().getFill().setColor("LightGray");
+        }
+
+        // Format each cell individually
+        let cellFormat = cell.getFormat();
+        cellFormat.getFont().setColor("Black");
+        cellFormat.setHorizontalAlignment(ExcelScript.HorizontalAlignment.center);
+        cellFormat.setVerticalAlignment(ExcelScript.VerticalAlignment.center);
+        cellFormat.setWrapText(true);
+    }
+//END PUTTING PEOPLE IN THE RIGHT PLACE 
+
+//START ANALYSIS
+// Print out the number of people in each row
+console.log("\nNumber of people in each row:");
+console.log("\nNumber of people in each row (sorted):");
+Array.from(rowCounts.entries())
+    .sort((a, b) => a[0] - b[0])
+    .forEach(([row, count]) => {
+      console.log(`Row ${row}: ${count} people`);
+    });
+
+  // Check for miscounts, sorted by row number
+  console.log("\nStudents who miscounted (sorted by row):");
+  Array.from(studentCounts.entries())
+    .sort((a, b) => a[1].row - b[1].row)
+    .forEach(([name, counts]) => {
+      let actualCount = rowCounts.get(counts.row) || 0;
+      if (counts.total !== actualCount) {
+        console.log(`${name} in row ${counts.row}: Counted ${counts.total} (L:${counts.left}, R:${counts.right}), actual count is ${actualCount}`);
+      }
+    });
+//END ANALYSIS 
+}
+
+function getRowNumber(rowString: string): number {//might NOT be needed now that we force an integer on the form. 
+    let digits = rowString.replace(/\D/g, '');
+    if (digits.length > 0) {
+        return parseInt(digits);
+    }
+    if (!isNaN(Number(rowString))) {
+        return parseInt(rowString);
+    } else {
+        switch (rowString) {
+            case "1st":
+                return 1;
+            case "back":
+                return 99; // Assuming "back" means the last row
+            default:
+                if (rowString.includes("from the last") || rowString.includes("last")) {
+                    return 99 - parseInt(rowString); // Assuming a large number for "last"
+                } else {
+                    return 0; // Default value if unable to parse
+                }
+        }
+    }
+}
+
+
+function border(workbook: ExcelScript.Workbook,height:number,width:number) {
+    // Get the RangeFormat object for the range "B2:G10".
+    const currentSheet = workbook.getWorksheet("Seating Chart")
+    console.log(height);
+    console.log(width);
+    let endColumnLetter = columnToLetter(width+1);
+    console.log(endColumnLetter);
+    // Get the range starting from B2 and extending n columns and m rows
+    let rangeForBorder = currentSheet.getRange(`B2:${endColumnLetter}${height + 1}`);
+
+
+    const format = rangeForBorder.getFormat();
+
+    // Get a RangeBorder object for each edge of the range and set the border properties.
+    let edgeTop = format.getRangeBorder(ExcelScript.BorderIndex.edgeTop);
+    edgeTop.setStyle(ExcelScript.BorderLineStyle.dashDot);
+    edgeTop.setWeight(ExcelScript.BorderWeight.thick);
+
+    let edgeBottom = format.getRangeBorder(ExcelScript.BorderIndex.edgeBottom);
+    edgeBottom.setStyle(ExcelScript.BorderLineStyle.dashDot);
+    edgeBottom.setWeight(ExcelScript.BorderWeight.thick);
+
+    let edgeLeft = format.getRangeBorder(ExcelScript.BorderIndex.edgeLeft);
+    edgeLeft.setStyle(ExcelScript.BorderLineStyle.dashDot);
+    edgeLeft.setWeight(ExcelScript.BorderWeight.thick);
+
+    let edgeRight = format.getRangeBorder(ExcelScript.BorderIndex.edgeRight);
+    edgeRight.setStyle(ExcelScript.BorderLineStyle.dashDot);
+    edgeRight.setWeight(ExcelScript.BorderWeight.thick);
+}
+
+
+// Helper function to convert column number to letter
+function columnToLetter(column: number) {
+    let temp =0;
+    let letter = '';
+    while (column > 0) {
+        temp = (column - 1) % 26;
+        letter = String.fromCharCode(temp + 65) + letter;
+        column = (column - (temp + 1)) / 26;
+    }
+    return letter;
+}
+
